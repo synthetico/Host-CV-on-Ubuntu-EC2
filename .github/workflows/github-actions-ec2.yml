@@ -3,7 +3,7 @@ name: Deploy to ASG Behind ALB
 on:
   push:
     branches:
-      - main  # Trigger on push to main branch
+      - main
 
 jobs:
   deploy:
@@ -24,19 +24,36 @@ jobs:
       - name: Get ASG Instances Public IPs
         id: get-instances
         run: |
+          ASG_NAME="git-ASG"  # Your ASG Name
+
+          # Fetch ASG instance IDs
           INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups \
-            --auto-scaling-group-name my-asg \
+            --auto-scaling-group-name $ASG_NAME \
             --query "AutoScalingGroups[0].Instances[*].InstanceId" \
             --region us-east-1 \
             --output text)
 
+          if [ -z "$INSTANCE_IDS" ]; then
+            echo "❌ No instances found in ASG: $ASG_NAME"
+            exit 1
+          fi
+
+          echo "✅ Found Instances: $INSTANCE_IDS"
+
+          # Fetch instance public DNS names
           INSTANCE_IPS=$(aws ec2 describe-instances \
             --instance-ids $INSTANCE_IDS \
             --query "Reservations[*].Instances[*].PublicDnsName" \
             --region us-east-1 \
             --output text)
 
+          if [ -z "$INSTANCE_IPS" ]; then
+            echo "❌ No public DNS found for instances: $INSTANCE_IDS"
+            exit 1
+          fi
+
           echo "INSTANCE_IPS=$INSTANCE_IPS" >> $GITHUB_ENV
+          echo "✅ Found Public DNS: $INSTANCE_IPS"
 
       - name: Deploy to ASG Instances via SSH
         uses: appleboy/ssh-action@master
@@ -54,16 +71,23 @@ jobs:
 
       - name: Verify Deployment via ALB
         run: |
+          ALB_NAME="git-ALB"  # Your ALB Name
+
           ALB_DNS=$(aws elbv2 describe-load-balancers \
-            --names my-alb \
+            --names $ALB_NAME \
             --query "LoadBalancers[0].DNSName" \
             --region us-east-1 \
             --output text)
-          
-          echo "Checking ALB: http://$ALB_DNS"
+
+          if [ -z "$ALB_DNS" ]; then
+            echo "❌ No ALB found with name: $ALB_NAME"
+            exit 1
+          fi
+
+          echo "✅ ALB DNS: http://$ALB_DNS"
           curl -I http://$ALB_DNS
 
       - name: Verify Route 53 Custom Domain
         run: |
-          echo "Verifying custom domain: http://${{ secrets.DOMAIN_NAME }}"
+          echo "✅ Verifying custom domain: http://${{ secrets.DOMAIN_NAME }}"
           curl -I http://${{ secrets.DOMAIN_NAME }}
