@@ -1,6 +1,6 @@
-name: Push-to-EC2
+name: Deploy to ASG via ALB
 
-# Trigger deployment only on push to main branch
+# Trigger deployment on push to main branch
 on:
   push:
     branches:
@@ -8,31 +8,43 @@ on:
 
 jobs:
   deploy:
-    name: Deploy to EC2 on master branch push
+    name: Deploy to ASG via ALB
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout the files
-        uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - name: Deploy to Server 1
-        uses: easingthemes/ssh-deploy@main
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
-          REMOTE_HOST: ${{ secrets.HOST_DNS }}
-          REMOTE_USER: ${{ secrets.USERNAME }}
-          TARGET: ${{ secrets.TARGET_DIR }}
+      - name: Setup SSH Key
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY }}" > key.pem
+          chmod 400 key.pem
 
-      - name: Executing remote ssh commands using ssh key
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.HOST_DNS }}
-          username: ${{ secrets.USERNAME }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            sudo apt-get -y update
-            sudo apt-get install -y apache2
-            sudo systemctl start apache2
-            sudo systemctl enable apache2
-            cd home
-            sudo mv * /var/www/html
+      - name: Get ASG Instance IPs
+        id: get-instances
+        run: |
+          INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-name my-asg \
+            --query "AutoScalingGroups[0].Instances[*].InstanceId" --output text)
+          
+          INSTANCE_IPS=$(aws ec2 describe-instances \
+            --instance-ids $INSTANCE_IDS \
+            --query "Reservations[*].Instances[*].PublicDnsName" --output text)
+          
+          echo "INSTANCE_IPS=$INSTANCE_IPS" >> $GITHUB_ENV
+
+      - name: Deploy to ASG Instances
+        run: |
+          for instance in $INSTANCE_IPS; do
+            echo "Deploying to $instance..."
+            ssh -o StrictHostKeyChecking=no -i key.pem ${{ secrets.USERNAME }}@$instance << EOF
+              sudo apt-get update -y
+              sudo apt-get install -y apache2
+              sudo systemctl restart apache2
+              cd /var/www/html
+              git pull origin main
+            EOF
+          done
+
+      - name: Verify Deployment via ALB
+        run: curl -I http://${{ secrets.DOMAIN_NAME }}
