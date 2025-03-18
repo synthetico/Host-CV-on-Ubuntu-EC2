@@ -1,50 +1,69 @@
-name: Deploy to ASG via ALB
+name: Deploy to ASG Behind ALB
 
-# Trigger deployment on push to main branch
 on:
   push:
     branches:
-      - main
+      - main  # Trigger on push to main branch
 
 jobs:
   deploy:
-    name: Deploy to ASG via ALB
+    name: Deploy to ASG & ALB
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - name: Checkout Repository
+        uses: actions/checkout@v2
 
-      - name: Setup SSH Key
-        run: |
-          echo "${{ secrets.EC2_SSH_KEY }}" > key.pem
-          chmod 400 key.pem
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Get ASG Instance IPs
+      - name: Get ASG Instances Public IPs
         id: get-instances
         run: |
           INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups \
             --auto-scaling-group-name my-asg \
-            --query "AutoScalingGroups[0].Instances[*].InstanceId" --output text)
-          
+            --query "AutoScalingGroups[0].Instances[*].InstanceId" \
+            --region us-east-1 \
+            --output text)
+
           INSTANCE_IPS=$(aws ec2 describe-instances \
             --instance-ids $INSTANCE_IDS \
-            --query "Reservations[*].Instances[*].PublicDnsName" --output text)
-          
+            --query "Reservations[*].Instances[*].PublicDnsName" \
+            --region us-east-1 \
+            --output text)
+
           echo "INSTANCE_IPS=$INSTANCE_IPS" >> $GITHUB_ENV
 
-      - name: Deploy to ASG Instances
-        run: |
-          for instance in $INSTANCE_IPS; do
-            echo "Deploying to $instance..."
-            ssh -o StrictHostKeyChecking=no -i key.pem ${{ secrets.USERNAME }}@$instance << EOF
-              sudo apt-get update -y
-              sudo apt-get install -y apache2
-              sudo systemctl restart apache2
-              cd /var/www/html
-              git pull origin main
-            EOF
-          done
+      - name: Deploy to ASG Instances via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ env.INSTANCE_IPS }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            sudo apt-get -y update
+            sudo apt-get install -y apache2
+            sudo systemctl start apache2
+            sudo systemctl enable apache2
+            cd home
+            sudo mv * /var/www/html
 
       - name: Verify Deployment via ALB
-        run: curl -I http://${{ secrets.DOMAIN_NAME }}
+        run: |
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --names my-alb \
+            --query "LoadBalancers[0].DNSName" \
+            --region us-east-1 \
+            --output text)
+          
+          echo "Checking ALB: http://$ALB_DNS"
+          curl -I http://$ALB_DNS
+
+      - name: Verify Route 53 Custom Domain
+        run: |
+          echo "Verifying custom domain: http://${{ secrets.DOMAIN_NAME }}"
+          curl -I http://${{ secrets.DOMAIN_NAME }}
