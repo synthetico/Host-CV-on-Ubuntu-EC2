@@ -21,7 +21,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-            - name: Get ASG Instances Public IPs
+      - name: Get ASG Instances Public IPs
         id: get-instances
         run: |
           ASG_NAME="git-ASG"  # Your ASG Name
